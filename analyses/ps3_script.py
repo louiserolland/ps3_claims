@@ -14,6 +14,20 @@ from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScal
 from ps3.data import create_sample_split, load_transform
 
 # %%
+""" Explenation of the code
+
+This scripts trains 3 insurance pricing models:
+
+- A beaseline Tweedie GLM
+- A GLM with splines and preprocessing pipelines
+- A Gradient Boosting (LightGBM) Tweedie model
+Glum implements production-grade GLMs
+ColumnTransformer + Pipeline are the recommended way to avoid data leakage 
+and bundle preprocessing and modelling steps.
+
+"""
+# %%
+
 # load data
 df = load_transform()
 
@@ -24,11 +38,20 @@ df["PurePremium"] = df["ClaimAmountCut"] / df["Exposure"]
 y = df["PurePremium"]
 # TODO: Why do you think, we divide by exposure here to arrive at our outcome variable?
 
+# It tells us how long the policy was active, and insurance risk must always be expressed per unit
+# of exposure (e.g., per year). Thus, we model the pure premium (claim amount per unit of exposure).
+# Dividing by exposure permits to normalize for different contract durations.
+
+
+
 
 # TODO: use your create_sample_split function here
 # df = create_sample_split(...)
 train = np.where(df["sample"] == "train")
 test = np.where(df["sample"] == "test")
+
+# this is the deterministic split described in lecture 5 to avoid leakage from future to past
+
 df_train = df.iloc[train].copy()
 df_test = df.iloc[test].copy()
 
