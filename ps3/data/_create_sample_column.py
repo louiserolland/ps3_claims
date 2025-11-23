@@ -1,5 +1,13 @@
+#%%
+
 import hashlib
 import pandas as pd
+from ps3.data import load_transform
+
+#%%
+
+df = load_transform()
+df
 
 
 """ 
@@ -39,6 +47,9 @@ Then we use a fiwed modulus that will give a float between O and 1.
 
 """
 
+
+
+#%%
 
 def create_sample_column(df: pd.DataFrame,
                          key_cols,
@@ -88,6 +99,7 @@ def create_sample_column(df: pd.DataFrame,
     return df
 
 
-df = create_sample_column(df, key_cols=["customer_id"], train_fraction=0.8)
-df["sample"].value_counts()
 
+
+
+# %%
