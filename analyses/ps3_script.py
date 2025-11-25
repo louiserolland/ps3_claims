@@ -6,7 +6,7 @@ from dask_ml.preprocessing import Categorizer
 from glum import GeneralizedLinearRegressor, TweedieDistribution
 from lightgbm import LGBMRegressor
 from sklearn.compose import ColumnTransformer
-from sklearn.metrics import auc
+from sklearn.metrics import auc, mean_tweedie_deviance, make_scorer
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScaler
@@ -15,6 +15,14 @@ from ps3.data import create_sample_split, load_transform
 
 # %%
 """ Explenation of the code
+
+This script follows the risk model presented on:
+
+QuantCo (n.d.).
+    *GLM French Motor Tutorial*.
+    glum documentation.
+    Retrieved from:
+    https://glum.readthedocs.io/en/latest/tutorials/glm_french_motor_tutorial/glm_french_motor.html
 
 This scripts trains 3 insurance pricing models:
 
@@ -43,10 +51,21 @@ y = df["PurePremium"]
 # Dividing by exposure permits to normalize for different contract durations.
 
 
+#Exposure meausre how long a policy was active or "at risk".
+#The longer a policy is active, the higher the expected claim amount.
+#Insurance risk must be expressed per unit of exposure.
 
+#Tweedie GLMs are commonly used for premium modelling in insurance, because
+#they model a mixture of:
+# - a probability of having a claim(frequency)
+# - the average size of the claim (severity)
+
+#%%
 
 # TODO: use your create_sample_split function here
-# df = create_sample_split(...)
+
+df = create_sample_column(df, key_cols=["IDpol"], train_fraction=0.8) 
+
 train = np.where(df["sample"] == "train")
 test = np.where(df["sample"] == "test")
 
@@ -55,10 +74,14 @@ test = np.where(df["sample"] == "test")
 df_train = df.iloc[train].copy()
 df_test = df.iloc[test].copy()
 
-categoricals = ["VehBrand", "VehGas", "Region", "Area", "DrivAge", "VehAge", "VehPower"]
+categoricals = ["VehBrand", "VehGas", "Region", "Area", "DrivAge", "VehAge", "VehPower"] 
 
-predictors = categoricals + ["BonusMalus", "Density"]
-glm_categorizer = Categorizer(columns=categoricals)
+predictors = categoricals + ["BonusMalus", "Density"] #why these predictors?
+# These predictors are commonly used in motor insurance pricing models.
+
+
+glm_categorizer = Categorizer(columns=categoricals) #why categorizer?
+# The Categorizer transform categorical columns into category dtype, which is required by glum for categorical features.
 
 X_train_t = glm_categorizer.fit_transform(df[predictors].iloc[train])
 X_test_t = glm_categorizer.transform(df[predictors].iloc[test])
@@ -108,17 +131,53 @@ print(
 # 3. Chain the transforms together with the GLM in a Pipeline.
 
 # Let's put together a pipeline
+
+
+
 numeric_cols = ["BonusMalus", "Density"]
-preprocessor = ColumnTransformer(
-    transformers=[
-        # TODO: Add numeric transforms here
-        ("cat", OneHotEncoder(sparse_output=False, drop="first"), categoricals),
+
+# 1. Numeric pipeline: scaler + splines
+numeric_transformer = Pipeline(
+    steps=[
+        ("scaler", StandardScaler()),
+        (
+            "splines",
+            SplineTransformer(
+                degree=3,
+                n_knots=6,
+                knots="quantile",
+                include_bias=False,  # we want only ONE global intercept from the GLM
+            ),
+        ),
     ]
 )
-preprocessor.set_output(transform="pandas")
-model_pipeline = Pipeline(
-    # TODO: Define pipeline steps here
+
+# 2. ColumnTransformer: numeric + categoricals (one-hot)
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", numeric_transformer, numeric_cols),
+        (
+            "cat",
+            OneHotEncoder(
+                sparse_output=False,
+                drop="first",  # avoids dummy trap, GLM has intercept
+                handle_unknown="infrequent_if_exist",
+            ),
+            categoricals,
+        ),
+    ]
 )
+
+preprocessor.set_output(transform="pandas")
+
+# 3. Full GLM pipeline
+model_pipeline = Pipeline(
+    steps=[
+        ("preprocess", preprocessor),
+        ("estimate", GeneralizedLinearRegressor(family=TweedieDist, l1_ratio=1, fit_intercept=True)),
+    ]
+)
+
 
 # let's have a look at the pipeline
 model_pipeline
@@ -167,6 +226,41 @@ print(
 # 1: Define the modelling pipeline. Tip: This can simply be a LGBMRegressor based on X_train_t from before.
 # 2. Make sure we are choosing the correct objective for our estimator.
 
+
+
+# TODO: Let's use a GBM instead as an estimator.
+# Steps
+# 1: Define the modelling pipeline. Tip: This can simply be a LGBMRegressor based on X_train_t from before.
+# 2. Make sure we are choosing the correct objective for our estimator.
+
+model_pipeline = Pipeline(
+    steps=[
+        (
+            "estimate",
+            LGBMRegressor(
+                objective="tweedie",
+                tweedie_variance_power=1.5,  # same power as GLM
+                learning_rate=0.05,
+                n_estimators=400,
+                max_depth=-1,         # let LGBM choose, regularise via leaves & min_data_in_leaf
+                num_leaves=31,
+                min_data_in_leaf=200, # helps reduce overfitting
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.0,
+                reg_lambda=0.0,
+            ),
+        )
+    ]
+)
+
+model_pipeline
+
+model_pipeline.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
+df_test["pp_t_lgbm"] = model_pipeline.predict(X_test_t)
+df_train["pp_t_lgbm"] = model_pipeline.predict(X_train_t)
+
+
 model_pipeline.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
 df_test["pp_t_lgbm"] = model_pipeline.predict(X_test_t)
 df_train["pp_t_lgbm"] = model_pipeline.predict(X_train_t)
@@ -193,6 +287,40 @@ print(
 # Note: Typically we tune many more parameters and larger grids,
 # but to save compute time here, we focus on getting the learning rate
 # and the number of estimators somewhat aligned -> tune learning_rate and n_estimators
+
+
+# Steps:
+# 1. Define a `GridSearchCV` object with our lgbm pipeline/estimator.
+
+param_grid = {
+    "estimate__learning_rate": [0.01, 0.03, 0.1],
+    "estimate__n_estimators": [200, 400, 800],
+}
+
+
+
+def tweedie_dev(y_true, y_pred, sample_weight=None):
+    return mean_tweedie_deviance(
+        y_true, y_pred, sample_weight=sample_weight
+    )
+
+tweedie_scorer = make_scorer(
+    tweedie_dev,
+    greater_is_better=False,
+)
+
+
+cv = GridSearchCV(
+    estimator=model_pipeline,
+    param_grid=param_grid,
+    cv=3,
+    scoring="neg_mean_tweedie_deviance",  # deviance-based scoring
+    n_jobs=-1,
+)
+
+cv.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
+
+
 cv = GridSearchCV(
 
 )
