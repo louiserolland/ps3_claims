@@ -6,7 +6,7 @@ from dask_ml.preprocessing import Categorizer
 from glum import GeneralizedLinearRegressor, TweedieDistribution
 from lightgbm import LGBMRegressor
 from sklearn.compose import ColumnTransformer
-from sklearn.metrics import auc
+from sklearn.metrics import auc, mean_tweedie_deviance, make_scorer
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScaler
@@ -161,7 +161,7 @@ preprocessor = ColumnTransformer(
             OneHotEncoder(
                 sparse_output=False,
                 drop="first",  # avoids dummy trap, GLM has intercept
-                handle_unknown="infrequent_if_exists",
+                handle_unknown="infrequent_if_exist",
             ),
             categoricals,
         ),
@@ -254,6 +254,8 @@ model_pipeline = Pipeline(
     ]
 )
 
+model_pipeline
+
 model_pipeline.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
 df_test["pp_t_lgbm"] = model_pipeline.predict(X_test_t)
 df_train["pp_t_lgbm"] = model_pipeline.predict(X_train_t)
@@ -294,6 +296,19 @@ param_grid = {
     "estimate__learning_rate": [0.01, 0.03, 0.1],
     "estimate__n_estimators": [200, 400, 800],
 }
+
+
+
+def tweedie_dev(y_true, y_pred, sample_weight=None):
+    return mean_tweedie_deviance(
+        y_true, y_pred, sample_weight=sample_weight
+    )
+
+tweedie_scorer = make_scorer(
+    tweedie_dev,
+    greater_is_better=False,
+)
+
 
 cv = GridSearchCV(
     estimator=model_pipeline,
